@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de Jogos da Lotofácil com IA e API Oficial</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f2f5;
+        }
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.1);
+        }
+        button {
+            padding: 12px 24px;
+            margin: 10px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+        }
+        #gameResult, #trainingStatus, #updateStatus {
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+        th {
+            background-color: #007bff;
+            color: #fff;
+        }
+        .hot { background-color: #ffcccb; }
+        .cold { background-color: #add8e6; }
+        canvas {
+            margin-top: 20px;
+            max-width: 100%;
+        }
+        select {
+            padding: 10px;
+            margin: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gerador de Jogos da Lotofácil com IA Otimizada</h1>
+        <div class="section">
+            <label for="numCount">Quantidade de Números:</label>
+            <select id="numCount">
+                <option value="15">15 (Aposta Simples)</option>
+                <option value="16">16 (Desdobramento)</option>
+                <option value="17">17 (Desdobramento)</option>
+                <option value="18">18 (Desdobramento)</option>
+                <option value="19">19 (Desdobramento)</option>
+                <option value="20">20 (Desdobramento)</option>
+            </select>
+            <button id="generateButton" onclick="generateGame()" disabled>Gerar Jogo</button>
+            <button id="bolaoButton" onclick="generateBolao()" disabled>Gerar Bolão</button>
+            <button id="trainButton" onclick="trainAI()" disabled>Treinar IA</button>
+            <button id="updateButton" onclick="updateResults()">Atualizar Resultados</button>
+        </div>
+        <div id="gameResult">Jogo gerado aparecerá aqui.</div>
+        <div id="trainingStatus">Status do treinamento: Não treinado.</div>
+        <div id="updateStatus">Última atualização: Aguardando carregamento inicial...</div>
+        <div class="section">
+            <h2>Números Quentes e Atrasados</h2>
+            <table id="statsTable">
+                <thead>
+                    <tr>
+                        <th>Número</th>
+                        <th>Frequência</th>
+                        <th>Sorteios sem Sair</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div class="section">
+            <h2>Gráfico de Probabilidade dos Números</h2>
+            <canvas id="probabilityChart"></canvas>
+        </div>
+        <div class="section">
+            <h2>Gráfico de Confiança da IA</h2>
+            <canvas id="confidenceChart"></canvas>
+        </div>
+        <div class="section">
+            <h2>Gráfico de Frequência (Quentes/Atrasados)</h2>
+            <canvas id="frequencyChart"></canvas>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Estado inicial
+        let historicalResults = [];
+        const primes = [2, 3, 5, 7, 11, 13, 17, 19, 23];
+        let probabilities = Array(25).fill(1 / 25);
+        let frequencies = Array(25).fill(0);
+        let lastDrawn = Array(25).fill(0);
+        let confidence = 0;
+        let isTrained = false;
+
+        // URLs das APIs
+        const API_CAIXA = 'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil';
+        const API_FALLBACK = 'https://api.guidi.dev.br/loteria/lotofacil/ultimo';
+
+        // Função para buscar resultados da API
+        async function fetchResults(contestNumber = null) {
+            let url = contestNumber ? `${API_CAIXA}/${contestNumber}` : API_CAIXA;
+            try {
+                const response = await fetch(url, {
+                    headers: { 'Accept': 'application/json' }
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.warn('Erro na API da Caixa, tentando fallback:', error);
+                try {
+                    const fallbackResponse = await fetch(API_FALLBACK);
+                    if (!fallbackResponse.ok) throw new Error(`HTTP ${fallbackResponse.status}`);
+                    const fallbackData = await fallbackResponse.json();
+                    return {
+                        numero: fallbackData.concurso,
+                        dataApuracao: fallbackData.data,
+                        listaDezenas: fallbackData.dezenas.map(n => n.toString().padStart(2, '0'))
+                    };
+                } catch (fallbackError) {
+                    console.error('Erro no fallback:', fallbackError);
+                    throw new Error('Não foi possível carregar os resultados.');
+                }
+            }
+        }
+
+        // Carregar resultados históricos iniciais (últimos 100 concursos)
+        async function loadHistoricalResults() {
+            try {
+                // Obter o último concurso
+                const latest = await fetchResults();
+                const latestContest = parseInt(latest.numero);
+                document.getElementById('updateStatus').innerText = `Última atualização: Concurso ${latestContest} (${latest.dataApuracao})`;
+                
+                // Carregar até 100 concursos anteriores
+                historicalResults = [];
+                const maxContests = Math.min(100, latestContest);
+                for (let i = 0; i < maxContests; i++) {
+                    const contestNumber = latestContest - i;
+                    try {
+                        const data = await fetchResults(contestNumber);
+                        if (data && data.listaDezenas) {
+                            historicalResults.push(data.listaDezenas.map(n => parseInt(n)));
+                        }
+                    } catch (error) {
+                        console.warn(`Erro ao carregar concurso ${contestNumber}:`, error);
+                    }
+                }
+
+                if (historicalResults.length > 0) {
+                    calculateStats();
+                    document.getElementById('generateButton').disabled = false;
+                    document.getElementById('bolaoButton').disabled = false;
+                    document.getElementById('trainButton').disabled = false;
+                    updateProbabilityChart();
+                    updateFrequencyChart();
+                } else {
+                    document.getElementById('updateStatus').innerText = 'Erro: Nenhum resultado histórico carregado.';
+                }
+            } catch (error) {
+                document.getElementById('updateStatus').innerText = `Erro ao carregar dados: ${error.message}`;
+            }
+        }
+
+        // Calcular estatísticas
+        function calculateStats() {
+            frequencies = Array(25).fill(0);
+            lastDrawn = Array(25).fill(historicalResults.length);
+            historicalResults.forEach((result, index) => {
+                result.forEach(num => {
+                    frequencies[num - 1]++;
+                    lastDrawn[num - 1] = historicalResults.length - index - 1;
+                });
+            });
+            let totalNumbers = historicalResults.length * 15;
+            probabilities = frequencies.map(freq => freq / totalNumbers || 0.01);
+            let sum = probabilities.reduce((a, b) => a + b, 0);
+            probabilities = probabilities.map(p => p / sum);
+            updateStatsTable();
+        }
+
+        // Avaliar jogo conforme estratégias
+        function evaluateGame(numbers) {
+            let score = 0;
+            let evens = numbers.filter(n => n % 2 === 0).length;
+            let odds = numbers.length - evens;
+            if ((evens >= 7 && evens <= 8) || (odds >= 7 && odds <= 8)) score += 40;
+            let primeCount = numbers.filter(n => primes.includes(n)).length;
+            if (primeCount >= 4 && primeCount <= 6) score += 30;
+            let hasSequence = false;
+            for (let i = 1; i < numbers.length - 1; i++) {
+                if (numbers[i] - numbers[i - 1] === 1 && numbers[i + 1] - numbers[i] === 1) {
+                    hasSequence = true;
+                    break;
+                }
+            }
+            if (!hasSequence) score += 20;
+            let top10 = frequencies.map((f, i) => ({ num: i + 1, freq: f }))
+                .sort((a, b) => b.freq - a.freq).slice(0, 10).map(x => x.num);
+            let hotCount = numbers.filter(n => top10.includes(n)).length;
+            if (hotCount >= 5) score += 10;
+            return { score, evens, odds, primeCount };
+        }
+
+        // Gerar jogo
+        async function generateGame() {
+            let numCount = parseInt(document.getElementById('numCount').value);
+            let bestGame = null;
+            let bestScore = -1;
+
+            for (let i = 0; i < 100; i++) {
+                let numbers = [];
+                let tempProbs = [...probabilities];
+                let top10 = frequencies.map((f, i) => ({ num: i + 1, freq: f }))
+                    .sort((a, b) => b.freq - a.freq).slice(0, 10).map(x => x.num);
+                let cold = lastDrawn.map((d, i) => ({ num: i + 1, draws: d }))
+                    .sort((a, b) => b.draws - a.draws).slice(0, 5).map(x => x.num);
+
+                let baseNumbers = [...new Set([...top10.slice(0, 5), ...cold.slice(0, 2)])];
+                numbers.push(...baseNumbers);
+                tempProbs = tempProbs.map((p, idx) => numbers.includes(idx + 1) ? 0 : p);
+
+                while (numbers.length < numCount) {
+                    let cumulative = 0;
+                    let random = Math.random();
+                    for (let j = 0; j < tempProbs.length; j++) {
+                        cumulative += tempProbs[j];
+                        if (random <= cumulative && !numbers.includes(j + 1)) {
+                            numbers.push(j + 1);
+                            tempProbs[j] = 0;
+                            break;
+                        }
+                    }
+                }
+
+                let isRepeated = historicalResults.some(result =>
+                    result.length === numbers.length &&
+                    result.every(num => numbers.includes(num))
+                );
+                if (isRepeated) continue;
+
+                numbers.sort((a, b) => a - b);
+                let evalResult = evaluateGame(numbers);
+                if (evalResult.score > bestScore) {
+                    bestScore = evalResult.score;
+                    bestGame = { numbers, ...evalResult };
+                }
+            }
+
+            if (bestGame) {
+                document.getElementById('gameResult').innerHTML = `
+                    <strong>Jogo Gerado:</strong> ${bestGame.numbers.join(', ')}<br>
+                    <strong>Detalhes:</strong> ${bestGame.evens} pares, ${bestGame.odds} ímpares, 
+                    ${bestGame.primeCount} primos, Score: ${bestGame.score}/100
+                `;
+            } else {
+                document.getElementById('gameResult').innerText = 'Não foi possível gerar um jogo único. Tente novamente.';
+            }
+            updateProbabilityChart();
+            updateFrequencyChart();
+        }
+
+        // Gerar bolão
+        async function generateBolao() {
+            let numCount = parseInt(document.getElementById('numCount').value);
+            let games = [];
+            let maxGames = Math.min(5, Math.floor(1000 / numCount));
+
+            for (let i = 0; i < maxGames; i++) {
+                let numbers = [];
+                let tempProbs = [...probabilities];
+                let top10 = frequencies.map((f, i) => ({ num: i + 1, freq: f }))
+                    .sort((a, b) => b.freq - a.freq).slice(0, 10).map(x => x.num);
+                let cold = lastDrawn.map((d, i) => ({ num: i + 1, draws: d }))
+                    .sort((a, b) => b.draws - a.draws).slice(0, 5).map(x => x.num);
+
+                let baseNumbers = [...new Set([...top10.slice(0, 5), ...cold.slice(0, 2)])];
+                numbers.push(...baseNumbers);
+                tempProbs = tempProbs.map((p, idx) => numbers.includes(idx + 1) ? 0 : p);
+
+                while (numbers.length < numCount) {
+                    let cumulative = 0;
+                    let random = Math.random();
+                    for (let j = 0; j < tempProbs.length; j++) {
+                        cumulative += tempProbs[j];
+                        if (random <= cumulative && !numbers.includes(j + 1)) {
+                            numbers.push(j + 1);
+                            tempProbs[j] = 0;
+                            break;
+                        }
+                    }
+                }
+
+                numbers.sort((a, b) => a - b);
+                if (!games.some(g => g.every(n => numbers.includes(n))) &&
+                    !historicalResults.some(r => r.every(n => numbers.includes(n)))) {
+                    games.push(numbers);
+                }
+            }
+
+            document.getElementById('gameResult').innerHTML = `
+                <strong>Bolão Gerado (${games.length} jogos):</strong><br>
+                ${games.map((g, i) => `Jogo ${i + 1}: ${g.join(', ')}`).join('<br>')}
+            `;
+            updateProbabilityChart();
+            updateFrequencyChart();
+        }
+
+        // Treinar IA
+        async function trainAI() {
+            calculateStats();
+            let mean = probabilities.reduce((a, b) => a + b, 0) / 25;
+            let variance = probabilities.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / 25;
+            confidence = Math.max(0, 1 - Math.sqrt(variance) * 10);
+            isTrained = true;
+            document.getElementById('trainingStatus').innerText = `Status do treinamento: Treinado (Confiança: ${(confidence * 100).toFixed_fm(2)}%)`;
+            updateConfidenceChart();
+        }
+
+        // Atualizar resultados
+        async function updateResults() {
+            try {
+                const latest = await fetchResults();
+                const latestNumbers = latest.listaDezenas.map(n => parseInt(n));
+                if (!historicalResults.some(r => r.every((n, i) => n === latestNumbers[i]))) {
+                    historicalResults.unshift(latestNumbers);
+                    document.getElementById('updateStatus').innerText = `Última atualização: Concurso ${latest.numero} (${latest.dataApuracao})`;
+                    if (isTrained) await trainAI();
+                    updateProbabilityChart();
+                    updateFrequencyChart();
+                } else {
+                    document.getElementById('updateStatus').innerText = `Última atualização: Concurso ${latest.numero} (já atualizado)`;
+                }
+            } catch (error) {
+                document.getElementById('updateStatus').innerText = `Erro ao atualizar: ${error.message}`;
+            }
+        }
+
+        // Atualizar tabela de estatísticas
+        function updateStatsTable() {
+            let tbody = document.querySelector('#statsTable tbody');
+            tbody.innerHTML = '';
+            for (let i = 0; i < 25; i++) {
+                let row = document.createElement('tr');
+                let isHot = frequencies[i] > (historicalResults.length * 15 / 25) * 1.2;
+                let isCold = lastDrawn[i] > 5;
+                row.className = isHot ? 'hot' : isCold ? 'cold' : '';
+                row.innerHTML = `
+                    <td>${i + 1}</td>
+                    <td>${frequencies[i]}</td>
+                    <td>${lastDrawn[i]}</td>
+                `;
+                tbody.appendChild(row);
+            }
+        }
+
+        // Configuração dos gráficos
+        const probabilityChart = new Chart(document.getElementById('probabilityChart'), {
+            type: 'bar',
+            data: {
+                labels: Array.from({length: 25}, (_, i) => i + 1),
+                datasets: [{
+                    label: 'Probabilidade (%)',
+                    data: probabilities.map(p => (p * 100).toFixed(2)),
+                    backgroundColor: 'rgba(0, 123, 255, 0.5)',
+                    borderColor: 'rgba(0, 123, 255, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                scales: {
+                    y: { beginAtZero: true, title: { display: true, text: 'Probabilidade (%)' } },
+                    x: { title: { display: true, text: 'Número' } }
+                }
+            }
+        });
+
+        const confidenceChart = new Chart(document.getElementById('confidenceChart'), {
+            type: 'line',
+            data: {
+                labels: ['Inicial', 'Após Treinamento'],
+                datasets: [{
+                    label: 'Confiança da IA (%)',
+                    data: [0, confidence * 100],
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    fill: false,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    y: { beginAtZero: true, max: 100, title: { display: true, text: 'Confiança (%)' } }
+                }
+            }
+        });
+
+        const frequencyChart = new Chart(document.getElementById('frequencyChart'), {
+            type: 'bar',
+            data: {
+                labels: Array.from({length: 25}, (_, i) => i + 1),
+                datasets: [
+                    {
+                        label: 'Frequência',
+                        data: frequencies,
+                        backgroundColor: 'rgba(40, 167, 69, 0.5)',
+                        borderColor: 'rgba(40, 167, 69, 1)',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'Sorteios sem Sair',
+                        data: lastDrawn,
+                        backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                scales: {
+                    y: { beginAtZero: true, title: { display: true, text: 'Quantidade' } },
+                    x: { title: { display: true, text: 'Número' } }
+                }
+            }
+        });
+
+        // Atualizar gráficos
+        function updateProbabilityChart() {
+            probabilityChart.data.datasets[0].data = probabilities.map(p => (p * 100).toFixed(2));
+            probabilityChart.update();
+        }
+
+        function updateConfidenceChart() {
+            confidenceChart.data.datasets[0].data = [0, confidence * 100];
+            confidenceChart.update();
+        }
+
+        function updateFrequencyChart() {
+            frequencyChart.data.datasets[0].data = frequencies;
+            frequencyChart.data.datasets[1].data = lastDrawn;
+            frequencyChart.update();
+        }
+
+        // Formatação numérica
+        Number.prototype.toFixed_fm = function(digits) {
+            return this.toFixed(digits).replace(/\.?0+$/, '');
+        };
+
+        // Inicializar
+        loadHistoricalResults();
+    </script>
+</body>
+</html>
